@@ -1,6 +1,13 @@
 # Distributed K-Means Clustering (MPI + OpenMP)
 
+![C++](https://img.shields.io/badge/C%2B%2B-11-blue?logo=cplusplus)
+![MPI](https://img.shields.io/badge/MPI-Distributed-orange)
+![OpenMP](https://img.shields.io/badge/OpenMP-Parallel-green)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
 A high-performance implementation of the K-means clustering algorithm using **MPI** for distributed computing across multiple nodes and **OpenMP** for shared-memory parallelism within each node.
+
+> **Highlights:** Hybrid parallelism, dynamic point migration between processes, N-dimensional support, and convergence detection — all in ~300 lines of C++.
 
 ## Architecture
 
@@ -98,6 +105,19 @@ Dim 1: Min=-13.5 Max=16.1 Mean=1.1 Variance=98.7
 Total execution time: 0.041 s
 ```
 
+## Performance
+
+![Speedup](benchmark_speedup.png)
+
+Measured on 5000 points (2D, 4 clusters), varying MPI processes and OpenMP threads.
+
+```bash
+# Reproduce
+chmod +x benchmark.sh
+make && ./benchmark.sh
+python3 plot_benchmark.py
+```
+
 ## Data Format
 
 The binary input file (`dataset.bin`) structure:
@@ -107,6 +127,15 @@ The binary input file (`dataset.bin`) structure:
 | nPoints     | uint32_t | Number of data points |
 | nDimensions | uint32_t | Dimensions per point  |
 | data        | float[]  | Row-major point data  |
+
+## Project Structure
+
+```
+├── main.cpp           # MPI + OpenMP K-means implementation
+├── generate_data.cpp  # Dataset generator (Gaussian clusters)
+├── Makefile           # Build configuration
+└── README.md
+```
 
 ## Technologies
 
