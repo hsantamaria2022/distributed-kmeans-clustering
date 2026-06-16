@@ -21,6 +21,13 @@ int main(int argc, char** argv){
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    if(size < 2){
+        if(rank == 0)
+            std::cerr << "Error: at least 2 MPI processes required (got " << size << ")\n";
+        MPI_Finalize();
+        return 1;
+    }
+
     uint32_t nPoints, dimensions; 
     std::vector<float> globalPoints;   
     
