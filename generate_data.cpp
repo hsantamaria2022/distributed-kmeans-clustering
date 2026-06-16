@@ -31,8 +31,7 @@ int main(int argc, char** argv)
         for (int j = 0; j < nPointsPerCluster; j++)
             data.push_back(getRandomPoint(centroid.x,centroid.y, 1.0f));
     }
-    FILE* resultsFile;
-    fopen_s(&resultsFile, "dataset.bin", "wb");
+    FILE* resultsFile = fopen("dataset.bin", "wb");
     int nRows = nClusters * nPointsPerCluster;
     int nCol = 2;
     fwrite(&nRows, sizeof(int), 1, resultsFile);
