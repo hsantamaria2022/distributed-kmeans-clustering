@@ -1,10 +1,5 @@
 # Distributed K-Means Clustering (MPI + OpenMP)
 
-![C++](https://img.shields.io/badge/C%2B%2B-11-blue?logo=cplusplus)
-![MPI](https://img.shields.io/badge/MPI-Distributed-orange)
-![OpenMP](https://img.shields.io/badge/OpenMP-Parallel-green)
-![License](https://img.shields.io/badge/License-MIT-yellow)
-
 A high-performance implementation of the K-means clustering algorithm using **MPI** for distributed computing across multiple nodes and **OpenMP** for shared-memory parallelism within each node.
 
 > **Highlights:** Hybrid parallelism, dynamic point migration between processes, N-dimensional support, and convergence detection — all in ~300 lines of C++.
