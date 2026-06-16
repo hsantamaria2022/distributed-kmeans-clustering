@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdlib>
 #include <vector>
 
 #define PI 3.141582f
@@ -18,10 +19,10 @@ point2D getRandomPoint(float x0, float y0,float maxRadius, float minRadius = 0.0
     return p;
 };
 
-int main()
+int main(int argc, char** argv)
 {
-    int nClusters = 1;
-    int nPointsPerCluster = 50;
+    int nClusters = (argc > 1) ? atoi(argv[1]) : 1;
+    int nPointsPerCluster = (argc > 2) ? atoi(argv[2]) : 50;
 
     std::vector<point2D> data;
     for (int i = 0; i < nClusters; i++)
