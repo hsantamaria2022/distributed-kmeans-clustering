@@ -1,7 +1,13 @@
+/**
+ * Distributed K-Means Clustering using MPI + OpenMP
+ * 
+ * Each MPI process owns one cluster. Points migrate between processes
+ * based on nearest-centroid assignment until convergence (<5% changes).
+ */
+
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <cstdio>
 #include <cstdint>
 #include <mpi.h>
 #include <omp.h>
@@ -15,12 +21,11 @@ int main(int argc, char** argv){
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    uint32_t nPuntos, dimensiones; 
-    std::vector<float> puntosGlobales;   
+    uint32_t nPoints, dimensions; 
+    std::vector<float> globalPoints;   
     
-    // Lectura binario (solo rank 0)
+    // --- Phase 1: Rank 0 reads binary dataset ---
     if(rank==0){
-
         std::ifstream file("salida", std::ios::binary);
 
         if(!file){
@@ -28,35 +33,35 @@ int main(int argc, char** argv){
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
 
-        file.read((char*)&nPuntos, sizeof(uint32_t));
-        file.read((char*)&dimensiones, sizeof(uint32_t));
+        file.read((char*)&nPoints, sizeof(uint32_t));
+        file.read((char*)&dimensions, sizeof(uint32_t));
 
-        puntosGlobales.resize(nPuntos * dimensiones);
+        globalPoints.resize(nPoints * dimensions);
 
-        std::cout << "Numero de filas: " << nPuntos << std::endl;
-        std::cout << "Numero de dimensiones: " << dimensiones << std::endl;
+        std::cout << "Number of rows: " << nPoints << std::endl;
+        std::cout << "Number of dimensions: " << dimensions << std::endl;
 
-        for(int i=0; i<nPuntos*dimensiones; i++){
+        for(uint32_t i=0; i<nPoints*dimensions; i++){
             float temp;
             file.read((char*)&temp, sizeof(float));
-            puntosGlobales[i] = temp;
+            globalPoints[i] = temp;
         }
     }
     
-    // Broadcast de datos
-    MPI_Bcast(&nPuntos, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&dimensiones, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+    // --- Phase 2: Distribute data across processes ---
+    MPI_Bcast(&nPoints, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&dimensions, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
 
-    // Scatterv inicial
-    int base = nPuntos / size;
-    int resto = nPuntos % size;
+    // Compute per-process chunk sizes for uneven distribution
+    int base = nPoints / size;
+    int remainder = nPoints % size;
 
     std::vector<int> sendcounts(size);
     std::vector<int> offset(size);
 
     for(int r=0; r<size; r++){
-        int puntos_r = (r < resto ? base + 1 : base);
-        sendcounts[r] = puntos_r * dimensiones;
+        int pointsForR = (r < remainder ? base + 1 : base);
+        sendcounts[r] = pointsForR * dimensions;
     }
     
     offset[0] = 0;
@@ -65,193 +70,152 @@ int main(int argc, char** argv){
     }
 
     int localCount = sendcounts[rank];
-    std::vector<float> puntosLocales(localCount);
+    std::vector<float> localPoints(localCount);
 
-    MPI_Scatterv(puntosGlobales.data(), sendcounts.data(), offset.data(), 
-                MPI_FLOAT, puntosLocales.data(), localCount, MPI_FLOAT, 0, 
+    MPI_Scatterv(globalPoints.data(), sendcounts.data(), offset.data(), 
+                MPI_FLOAT, localPoints.data(), localCount, MPI_FLOAT, 0, 
                 MPI_COMM_WORLD);
     
-    int localN = localCount / dimensiones;
-    std::vector<int> gruposLocales;
+    int localN = localCount / dimensions;
+    std::vector<int> localGroups;
 
-    std::cout << "Rank " << rank << " ha recibido " << localCount / dimensiones << " puntos" << std::endl;
+    std::cout << "Rank " << rank << " received " << localN << " points" << std::endl;
 
-    // Bucle principal K-means
+    // --- Phase 3: Iterative K-means loop ---
     int maxIter = 2000;
 
     for(int iter = 0; iter < maxIter; iter++){
-        // Paso 3: Calcular centroide local
-        localN = localCount / dimensiones;
-        
-        gruposLocales.assign(localN, -1);
+        localN = localCount / dimensions;
+        localGroups.assign(localN, -1);
 
-        float* centroide = new float[dimensiones]();
+        // Compute local centroid (mean of all local points)
+        std::vector<float> centroid(dimensions, 0.0f);
 
         if (localN > 0){
-            #pragma omp parallel for reduction(+:centroide[:dimensiones]) schedule(static)
+            #pragma omp parallel for reduction(+:centroid[:dimensions]) schedule(static)
             for (int i=0; i<localN; i++){
-                for (int d=0; d<dimensiones; d++){
-                    centroide[d] += puntosLocales[i * dimensiones + d];
+                for (uint32_t d=0; d<dimensions; d++){
+                    centroid[d] += localPoints[i * dimensions + d];
                 }
             }
 
-            for(int d=0; d<dimensiones; d++){
-                centroide[d] /= localN;
+            for(uint32_t d=0; d<dimensions; d++){
+                centroid[d] /= localN;
             }
         }
-        
 
-        // Compartir centroides
-        std::vector<float> centroidesGlobales(size*dimensiones);
-
-        MPI_Allgather(centroide, dimensiones, MPI_FLOAT, centroidesGlobales.data(), dimensiones, MPI_FLOAT, MPI_COMM_WORLD);
-
-        //liberar espacio
-        delete[] centroide;
+        // Share centroids across all processes
+        std::vector<float> globalCentroids(size*dimensions);
+        MPI_Allgather(centroid.data(), dimensions, MPI_FLOAT, 
+                      globalCentroids.data(), dimensions, MPI_FLOAT, MPI_COMM_WORLD);
 
         if(rank==0){
-            std::cout << "\nCentroides iter: " << iter << "\n";
+            std::cout << "\nCentroids iter: " << iter << "\n";
             for(int r=0; r<size; r++){
-                std::cout << "Grupo " << r << ": [ ";
-                for(int d=0; d<dimensiones; d++){
-                    std::cout << centroidesGlobales[r*dimensiones + d] << " ";
+                std::cout << "Group " << r << ": [ ";
+                for(uint32_t d=0; d<dimensions; d++){
+                    std::cout << globalCentroids[r*dimensions + d] << " ";
                 }
                 std::cout << "]\n";
             }
         }
 
+        // Assign each point to nearest centroid (parallel)
+        #pragma omp parallel for schedule(static)
+        for(int i=0; i<localN; i++){
+            float bestDist = 1e30f;
+            int bestGroup = -1;
 
-        // Paso 4: Reasignar cada punto al centroide más cercano
-        int numThreads = omp_get_max_threads();
-        std::vector<double> tiempos(numThreads, 0.0);
-        
-        #pragma omp parallel
-        {
-            int tid = omp_get_thread_num();
-            double start = omp_get_wtime();
+            for(int c = 0; c<size; c++){
+                float dist = 0.0f;
 
-            #pragma omp for schedule(static)
-            for(int i=0; i<localN; i++){
-                float mejorDist = 1e308;
-                int mejorGrupo = -1;
-
-                for(int c = 0; c<size; c++){
-                    float dist = 0.0;
-
-                    for(int d =0; d<dimensiones; d++){
-                        float diff = puntosLocales[i*dimensiones +d] - centroidesGlobales[c*dimensiones +d];
-                        dist += diff * diff;
-                    }
-
-                    if(dist<mejorDist){
-                        mejorDist = dist;
-                        mejorGrupo = c;
-                    }
+                for(uint32_t d=0; d<dimensions; d++){
+                    float diff = localPoints[i*dimensions+d] - globalCentroids[c*dimensions+d];
+                    dist += diff * diff;
                 }
 
-                gruposLocales[i] = mejorGrupo;
+                if(dist < bestDist){
+                    bestDist = dist;
+                    bestGroup = c;
+                }
             }
 
-            double end = omp_get_wtime();
-            tiempos[tid] =  end-start;
+            localGroups[i] = bestGroup;
         }
 
-        // if(rank == 0){
-        //     std::cout << "\n--- Tiempos por hilos (iter " << iter << ") ---\n";
+        // Count points assigned to a different cluster than current rank
+        int localChanges = 0;
 
-        //     double max_t = 0.0;
-        //     double min_t = 1e9;
-
-        //     for(int i=0; i<numThreads; i++){
-        //         std::cout << "Hilo " << i << ": " << tiempos[i] << " s\n";
-
-        //         if(tiempos[i] > max_t) max_t = tiempos[i];
-        //         if(tiempos[i] < min_t) min_t = tiempos[i];
-        //     }
-
-        //     std::cout << "Desbalance: " << (max_t - min_t) << " s" << std::endl;
-        // }
-        
-
-        // Contar cambios locales: puntos asignados a un grupo distinto al rank actual
-        int cambiosLocales = 0;
-
-        #pragma omp parallel for reduction(+:cambiosLocales)
+        #pragma omp parallel for reduction(+:localChanges)
         for(int i=0; i < localN; i++){
-            if (gruposLocales[i] != rank){
-                cambiosLocales++;
+            if (localGroups[i] != rank){
+                localChanges++;
             }
         }
-        
 
-        // Reducir cambios globales
-        int cambiosGlobales = 0;
-        MPI_Allreduce(&cambiosLocales, &cambiosGlobales, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        int globalChanges = 0;
+        MPI_Allreduce(&localChanges, &globalChanges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
-        // Calcular porcentaje global
-        float porcentajeCambios = (float)cambiosGlobales / (float)nPuntos;
+        float changeRatio = (float)globalChanges / (float)nPoints;
         if(rank==0){
-            std::cout << "\nPorcentaje cambios: " << porcentajeCambios * 100.0 << "%. iter: " << iter << std::endl;
+            std::cout << "\nChange percentage: " << changeRatio * 100.0 << "%. iter: " << iter << std::endl;
         }
 
-        // Condición de parada
-        if (porcentajeCambios < 0.05) {
+        // Convergence: stop when less than 5% of points change cluster
+        if (changeRatio < 0.05f) {
             if (rank == 0){
-                std::cout << "Convergencia alcanzada en iteración " << iter
-                        << " con " << porcentajeCambios * 100.0 
-                        << "% de cambios globales.\n";
+                std::cout << "Convergence reached at iteration " << iter
+                        << " with " << changeRatio * 100.0 
+                        << "% global changes.\n";
             }
             break;
         }
 
-        //Paso 5: Mandar puntos al rank correspondiente
+        // --- Phase 4: Migrate points to their assigned process ---
 
-        //Contar cuántos puntos enviar a cada proceso
+        // Count how many floats to send to each process
         std::vector<int> sendCounts(size, 0);
 
         #pragma omp parallel
         {
-            std::vector<int> localCounts(size,0);
+            std::vector<int> threadCounts(size, 0);
 
             #pragma omp for nowait
             for(int i=0; i<localN; i++){
-                int destino = gruposLocales[i]; //el grupo es el rank destino
-                localCounts[destino] += dimensiones; //enviamos 'dimensiones' floats
+                threadCounts[localGroups[i]] += dimensions;
             }
 
             #pragma omp critical 
             {
                 for(int r=0; r<size; r++){
-                    sendCounts[r] += localCounts[r];
+                    sendCounts[r] += threadCounts[r];
                 }
             }
         }
 
-        //Construir los offset
+        // Build send buffer with points grouped by destination
         std::vector<int> sdispls(size);
         sdispls[0]=0;
         for(int r=1; r<size; r++){
             sdispls[r] = sdispls[r-1] + sendCounts[r-1];
         }
 
-        //Construir buffer envio
         int totalFloatsToSend = sdispls[size-1] + sendCounts[size-1];
         std::vector<float> sendbuf(totalFloatsToSend);
-
         std::vector<int> pos(size, 0);
         
         for(int i=0; i<localN; i++){
-            int destino = gruposLocales[i];
-            int offset = sdispls[destino] + pos[destino];
+            int dest = localGroups[i];
+            int off = sdispls[dest] + pos[dest];
 
-            for(int d=0; d<dimensiones; d++){
-                sendbuf[offset+d] = puntosLocales[i * dimensiones + d];
+            for(uint32_t d=0; d<dimensions; d++){
+                sendbuf[off+d] = localPoints[i * dimensions + d];
             }
 
-            pos[destino] += dimensiones;
+            pos[dest] += dimensions;
         }
 
-        //Intercambiar puntos con MPI_Alltoallv
+        // Exchange points between all processes
         std::vector<int> recvcounts(size);
         MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvcounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
@@ -264,21 +228,22 @@ int main(int argc, char** argv){
         int totalRecv = rdispls[size-1] + recvcounts[size-1];
         std::vector<float> recvbuf(totalRecv);
 
-        MPI_Alltoallv(sendbuf.data(), sendCounts.data(), sdispls.data(), MPI_FLOAT, recvbuf.data(), recvcounts.data(), rdispls.data(), MPI_FLOAT, MPI_COMM_WORLD);
+        MPI_Alltoallv(sendbuf.data(), sendCounts.data(), sdispls.data(), MPI_FLOAT, 
+                      recvbuf.data(), recvcounts.data(), rdispls.data(), MPI_FLOAT, MPI_COMM_WORLD);
 
-        // Actualizar puntosLocales, localCount, localN
-        puntosLocales = recvbuf;
+        // Update local data with received points
+        localPoints = recvbuf;
         localCount = totalRecv;
-        localN = localCount / dimensiones;
+        localN = localCount / dimensions;
 
-        // Calculo estadísticas globales (min,max,media,varianza) - OpenMP buffers por hilo
+        // --- Phase 5: Compute global statistics (min, max, mean, variance) ---
         int nt = omp_get_max_threads();
 
-        std::vector<std::vector<float>>  tMin(nt, std::vector<float>(dimensiones,  1e9f));
-        std::vector<std::vector<float>>  tMax(nt, std::vector<float>(dimensiones, -1e9f));
-        std::vector<std::vector<double>> tSum(nt, std::vector<double>(dimensiones, 0.0));
+        std::vector<std::vector<float>>  tMin(nt, std::vector<float>(dimensions,  1e9f));
+        std::vector<std::vector<float>>  tMax(nt, std::vector<float>(dimensions, -1e9f));
+        std::vector<std::vector<double>> tSum(nt, std::vector<double>(dimensions, 0.0));
 
-        // Pase 1: min, max, suma (paralelo, sin sincronización)
+        // Pass 1: parallel min, max, sum (thread-local buffers, no sync needed)
         #pragma omp parallel
         {
             int tid = omp_get_thread_num();
@@ -288,8 +253,8 @@ int main(int argc, char** argv){
 
             #pragma omp for schedule(static)
             for(int i=0; i<localN; i++){
-                const float* row = &puntosLocales[i * dimensiones];
-                for(int d=0; d<(int)dimensiones; d++){
+                const float* row = &localPoints[i * dimensions];
+                for(int d=0; d<(int)dimensions; d++){
                     float v = row[d];
                     if(v < myMin[d]) myMin[d] = v;
                     if(v > myMax[d]) myMax[d] = v;
@@ -298,34 +263,34 @@ int main(int argc, char** argv){
             }
         }
 
-        // Reducción secuencial de hilos -> local
-        std::vector<float>  minLocal(dimensiones,  1e9f);
-        std::vector<float>  maxLocal(dimensiones, -1e9f);
-        std::vector<double> sumLocal(dimensiones, 0.0);
+        // Reduce thread-local results
+        std::vector<float>  minLocal(dimensions,  1e9f);
+        std::vector<float>  maxLocal(dimensions, -1e9f);
+        std::vector<double> sumLocal(dimensions, 0.0);
         for(int t=0; t<nt; t++){
-            for(int d=0; d<(int)dimensiones; d++){
+            for(int d=0; d<(int)dimensions; d++){
                 if(tMin[t][d] < minLocal[d]) minLocal[d] = tMin[t][d];
                 if(tMax[t][d] > maxLocal[d]) maxLocal[d] = tMax[t][d];
                 sumLocal[d] += tSum[t][d];
             }
         }
 
-        // Reducir min, max, suma con MPI
-        std::vector<float> minGlobal(dimensiones), maxGlobal(dimensiones);
-        std::vector<double> sumGlobal(dimensiones);
-        MPI_Reduce(minLocal.data(), minGlobal.data(), dimensiones, MPI_FLOAT, MPI_MIN, 0, MPI_COMM_WORLD);
-        MPI_Reduce(maxLocal.data(), maxGlobal.data(), dimensiones, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(sumLocal.data(), sumGlobal.data(), dimensiones, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        // MPI reduction across processes
+        std::vector<float> minGlobal(dimensions), maxGlobal(dimensions);
+        std::vector<double> sumGlobal(dimensions);
+        MPI_Reduce(minLocal.data(), minGlobal.data(), dimensions, MPI_FLOAT, MPI_MIN, 0, MPI_COMM_WORLD);
+        MPI_Reduce(maxLocal.data(), maxGlobal.data(), dimensions, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(sumLocal.data(), sumGlobal.data(), dimensions, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-        // Calcular media global y broadcast para pase 2
-        std::vector<double> media(dimensiones);
+        // Compute global mean and broadcast for variance pass
+        std::vector<double> mean(dimensions);
         if(rank==0){
-            for(int d=0; d<(int)dimensiones; d++)
-                media[d] = sumGlobal[d] / nPuntos;
+            for(int d=0; d<(int)dimensions; d++)
+                mean[d] = sumGlobal[d] / nPoints;
         }
-        MPI_Bcast(media.data(), dimensiones, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Bcast(mean.data(), dimensions, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-        // Pase 2: varianza (paralelo, numéricamente estable)
+        // Pass 2: parallel variance computation
         for(int t=0; t<nt; t++)
             std::fill(tSum[t].begin(), tSum[t].end(), 0.0);
 
@@ -336,30 +301,30 @@ int main(int argc, char** argv){
 
             #pragma omp for schedule(static)
             for(int i=0; i<localN; i++){
-                const float* row = &puntosLocales[i * dimensiones];
-                for(int d=0; d<(int)dimensiones; d++){
-                    double diff = row[d] - media[d];
+                const float* row = &localPoints[i * dimensions];
+                for(int d=0; d<(int)dimensions; d++){
+                    double diff = row[d] - mean[d];
                     myVar[d] += diff * diff;
                 }
             }
         }
 
-        std::vector<double> varLocal(dimensiones, 0.0);
+        std::vector<double> varLocal(dimensions, 0.0);
         for(int t=0; t<nt; t++)
-            for(int d=0; d<(int)dimensiones; d++)
+            for(int d=0; d<(int)dimensions; d++)
                 varLocal[d] += tSum[t][d];
 
-        std::vector<double> varGlobal(dimensiones);
-        MPI_Reduce(varLocal.data(), varGlobal.data(), dimensiones, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        std::vector<double> varGlobal(dimensions);
+        MPI_Reduce(varLocal.data(), varGlobal.data(), dimensions, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
         if(rank==0){
-            std::cout << "\n--- Estadísticas globales ---" << std::endl;
-            for(int d=0; d<(int)dimensiones; d++){
-                std::cout << "Dim " << d << ":" << std::endl;
-                std::cout << "  Min      = " << minGlobal[d] << "\n";
-                std::cout << "  Max      = " << maxGlobal[d] << "\n";
-                std::cout << "  Media    = " << media[d] << "\n";
-                std::cout << "  Varianza = " << (varGlobal[d] / nPuntos) << "\n\n";
+            std::cout << "\n--- Global Statistics ---" << std::endl;
+            for(int d=0; d<(int)dimensions; d++){
+                std::cout << "Dim " << d << ":"
+                          << " Min=" << minGlobal[d]
+                          << " Max=" << maxGlobal[d]
+                          << " Mean=" << mean[d]
+                          << " Variance=" << (varGlobal[d] / nPoints) << "\n";
             }
         }
 
@@ -367,10 +332,9 @@ int main(int argc, char** argv){
     }
     
     double t1 = MPI_Wtime();
-    double total = t1-t0;
 
-    if(rank ==0){
-        std::cout << "\nTiempo total del programa: " << total << " s" << std::endl;
+    if(rank == 0){
+        std::cout << "\nTotal execution time: " << (t1-t0) << " s" << std::endl;
     }
 
     MPI_Finalize();
