@@ -6,7 +6,7 @@ all: kmeans generate_data
 kmeans: main.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
-generate_data: generateRndSeeds.cpp
+generate_data: generate_data.cpp
 	g++ -O2 -std=c++11 -o $@ $<
 
 clean:

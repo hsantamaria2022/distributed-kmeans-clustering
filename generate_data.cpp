@@ -33,9 +33,9 @@ int main(int argc, char** argv)
     }
     FILE* resultsFile;
     fopen_s(&resultsFile, "dataset.bin", "wb");
-    int nFilas = nClusters * nPointsPerCluster;
+    int nRows = nClusters * nPointsPerCluster;
     int nCol = 2;
-    fwrite(&nFilas, sizeof(int), 1, resultsFile);
+    fwrite(&nRows, sizeof(int), 1, resultsFile);
     fwrite(&nCol, sizeof(int), 1, resultsFile);
     fwrite(data.data(), sizeof(float), data.size()*nCol, resultsFile);
     fclose(resultsFile);
