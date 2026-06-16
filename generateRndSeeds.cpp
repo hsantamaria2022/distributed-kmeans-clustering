@@ -32,7 +32,7 @@ int main(int argc, char** argv)
             data.push_back(getRandomPoint(centroid.x,centroid.y, 1.0f));
     }
     FILE* resultsFile;
-    fopen_s(&resultsFile, "salida", "wb");
+    fopen_s(&resultsFile, "dataset.bin", "wb");
     int nFilas = nClusters * nPointsPerCluster;
     int nCol = 2;
     fwrite(&nFilas, sizeof(int), 1, resultsFile);

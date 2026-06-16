@@ -26,7 +26,7 @@ int main(int argc, char** argv){
     
     // --- Phase 1: Rank 0 reads binary dataset ---
     if(rank==0){
-        std::ifstream file("salida", std::ios::binary);
+        std::ifstream file("dataset.bin", std::ios::binary);
 
         if(!file){
             std::cout << "Error reading binary file" << std::endl;

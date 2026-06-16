@@ -1,0 +1,16 @@
+# Build artifacts
+kmeans
+generate_data
+*.o
+
+# Data files
+dataset.bin
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
