@@ -104,6 +104,17 @@ Dim 1: Min=-13.5 Max=16.1 Mean=1.1 Variance=98.7
 Total execution time: 0.041 s
 ```
 
+## Design Decision: Static Distribution vs Point Migration
+
+A common academic approach assigns one cluster per MPI process and migrates points between processes each iteration (`MPI_Alltoallv`). This implementation deliberately uses **static data distribution** instead:
+
+- **Balanced workload**: Each process always holds ~N/P points regardless of cluster sizes. The migration model suffers chronic load imbalance when clusters have uneven sizes.
+- **Predictable communication**: `MPI_Allreduce` on fixed-size partial sums replaces variable-size `MPI_Alltoallv` messages, eliminating the need for a two-step size-negotiation protocol.
+- **Less memory churn**: Points never move, so no per-iteration reallocations or send buffers are needed.
+- **K independent of P**: The number of clusters is not tied to the number of processes, allowing flexible deployment.
+
+The tradeoff is that every process computes distances to all K centroids for its local points, but this is trivially parallelized with OpenMP and scales linearly.
+
 ## Performance
 
 ![Speedup](benchmark_speedup.png)
