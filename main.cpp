@@ -1,8 +1,9 @@
 /**
  * Distributed K-Means Clustering using MPI + OpenMP
  * 
- * Each MPI process owns one cluster. Points migrate between processes
- * based on nearest-centroid assignment until convergence (<5% changes).
+ * Points are statically distributed across processes. Each process
+ * computes partial sums for all K centroids, combined via MPI_Allreduce.
+ * K is configurable and independent of the number of processes.
  */
 
 #include <iostream>
