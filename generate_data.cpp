@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstdlib>
+#include <cstdint>
 #include <cmath>
 #include <vector>
 
@@ -28,16 +29,16 @@ int main(int argc, char** argv)
     std::vector<point2D> data;
     for (int i = 0; i < nClusters; i++)
     {
-        point2D centroid = getRandomPoint(0.0f, 0.0f, 20.0, 0.0);
+        point2D centroid = getRandomPoint(0.0f, 0.0f, 5.0, 0.0);
         for (int j = 0; j < nPointsPerCluster; j++)
-            data.push_back(getRandomPoint(centroid.x,centroid.y, 1.0f));
+            data.push_back(getRandomPoint(centroid.x,centroid.y, 5.0f));
     }
     FILE* resultsFile = fopen("dataset.bin", "wb");
-    int nRows = nClusters * nPointsPerCluster;
-    int nCol = 2;
-    fwrite(&nRows, sizeof(int), 1, resultsFile);
-    fwrite(&nCol, sizeof(int), 1, resultsFile);
-    fwrite(data.data(), sizeof(float), data.size()*nCol, resultsFile);
+    uint32_t nRows = nClusters * nPointsPerCluster;
+    uint32_t nCol = 2;
+    fwrite(&nRows, sizeof(uint32_t), 1, resultsFile);
+    fwrite(&nCol, sizeof(uint32_t), 1, resultsFile);
+    fwrite(data.data(), sizeof(point2D), data.size(), resultsFile);
     fclose(resultsFile);
     for (int i = 0; i < data.size(); i++)
         std::cout << data[i].x << "\t" << data[i].y << "\n";

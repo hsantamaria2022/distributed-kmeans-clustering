@@ -2,7 +2,7 @@
 
 A high-performance implementation of the K-means clustering algorithm using **MPI** for distributed computing across multiple nodes and **OpenMP** for shared-memory parallelism within each node.
 
-> **Highlights:** Hybrid parallelism, dynamic point migration between processes, N-dimensional support, and convergence detection — all in ~300 lines of C++.
+> **Highlights:** Hybrid parallelism, balanced workload across processes, N-dimensional support, configurable K, and convergence detection — all in ~250 lines of C++.
 
 ## Architecture
 
@@ -21,24 +21,25 @@ A high-performance implementation of the K-means clustering algorithm using **MP
 └───┬────┘  └───┬────┘  └───┬────┘
     │            │            │
     └────────────┼────────────┘
-                 │ MPI_Alltoallv (point migration)
+                 │ MPI_Allreduce (partial sums)
                  ▼
          Iterate until convergence
 ```
 
-Each MPI process owns one cluster. On every iteration:
+Points are distributed evenly and remain static. On every iteration:
 
-1. Each process computes its local centroid (OpenMP-parallel)
-2. Centroids are shared via `MPI_Allgather`
-3. Each point is reassigned to the nearest centroid
-4. Points migrate to their new owner process via `MPI_Alltoallv`
-5. Global statistics (min, max, mean, variance) are computed via MPI reductions
-6. Convergence is reached when <5% of points change cluster
+1. Each process assigns its local points to the nearest centroid (OpenMP-parallel)
+2. Partial sums and counts per cluster are computed locally (OpenMP-parallel)
+3. Partial results are combined globally via `MPI_Allreduce`
+4. Centroids are updated from global sums
+5. Convergence is reached when <0.1% of points change cluster
+6. Global statistics (min, max, mean, variance) are computed via MPI reductions after convergence
 
 ## Key Features
 
 - **Hybrid parallelism**: MPI (inter-node) + OpenMP (intra-node)
-- **Dynamic load balancing**: points migrate each iteration
+- **Balanced workload**: points stay evenly distributed, no migration needed
+- **Configurable K**: number of clusters is independent of the number of processes
 - **N-dimensional**: works with arbitrary-dimensional data
 - **Binary I/O**: efficient data format for large datasets
 
@@ -65,12 +66,15 @@ make
 # Generate sample data (4 clusters, 500 points each)
 ./generate_data 4 500
 
-# Run with 4 MPI processes
-mpirun -np 4 ./kmeans
+# Run with 4 MPI processes, 4 clusters
+mpirun -np 4 ./kmeans 4
+
+# K independent of processes: 6 clusters on 2 processes
+mpirun -np 2 ./kmeans 6
 
 # Optional: control threads per process
 export OMP_NUM_THREADS=4
-mpirun -np 4 ./kmeans
+mpirun -np 4 ./kmeans 4
 ```
 
 ## Example Output
@@ -91,7 +95,7 @@ Group 3: [ -5.43 -11.20 ]
 
 Change percentage: 62.5%. iter: 0
 ...
-Convergence reached at iteration 8 with 3.2% global changes.
+Convergence reached at iteration 8 with 0.09% global changes.
 
 --- Global Statistics ---
 Dim 0: Min=-14.2 Max=10.8 Mean=-1.4 Variance=72.3
@@ -104,7 +108,7 @@ Total execution time: 0.041 s
 
 ![Speedup](benchmark_speedup.png)
 
-Measured on 5000 points (2D, 4 clusters), varying MPI processes and OpenMP threads.
+Measured on 1M points (2D, 4 clusters), varying MPI processes and OpenMP threads.
 
 ```bash
 # Reproduce
@@ -129,13 +133,15 @@ The binary input file (`dataset.bin`) structure:
 ├── main.cpp           # MPI + OpenMP K-means implementation
 ├── generate_data.cpp  # Dataset generator (Gaussian clusters)
 ├── Makefile           # Build configuration
+├── benchmark.sh       # Performance measurement script
+├── plot_benchmark.py  # Speedup visualization
 └── README.md
 ```
 
 ## Technologies
 
 - **C++11** — Core language
-- **MPI** — Distributed memory parallelism (Scatterv, Allgather, Alltoallv, Reduce)
+- **MPI** — Distributed memory parallelism (Scatterv, Allreduce, Reduce, Bcast)
 - **OpenMP** — Shared memory parallelism (parallel for, reductions, critical sections)
 
 ## License

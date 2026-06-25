@@ -13,7 +13,7 @@ echo "processes,threads,time_seconds" > "$OUTPUT"
 for NP in 1 2 4; do
     for NT in 1 2 4 8; do
         export OMP_NUM_THREADS=$NT
-        TIME=$(mpirun --oversubscribe -np $NP ./kmeans 2>/dev/null | grep "Total execution time" | awk '{print $4}')
+        TIME=$(mpirun --oversubscribe -np $NP ./kmeans $DATASET_CLUSTERS 2>/dev/null | grep "Total execution time" | awk '{print $4}')
         echo "$NP,$NT,$TIME" >> "$OUTPUT"
         echo "NP=$NP, NT=$NT -> ${TIME}s"
     done

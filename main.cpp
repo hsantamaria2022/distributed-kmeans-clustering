@@ -21,12 +21,15 @@ int main(int argc, char** argv){
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    if(size < 2){
+    if(size < 1){
         if(rank == 0)
-            std::cerr << "Error: at least 2 MPI processes required (got " << size << ")\n";
+            std::cerr << "Error: at least 1 MPI process required\n";
         MPI_Finalize();
         return 1;
     }
+
+    int K = 4; // default number of clusters
+    if(argc > 1) K = atoi(argv[1]);
 
     uint32_t nPoints, dimensions; 
     std::vector<float> globalPoints;   
@@ -86,57 +89,28 @@ int main(int argc, char** argv){
 
     // --- Phase 3: Iterative K-means loop ---
     int maxIter = 2000;
-    std::vector<int> localGroups(localN);
-    std::vector<float> globalCentroids(size * dimensions);
+    std::vector<int> localGroups(localN, 0);
+    std::vector<float> globalCentroids(K * dimensions, 0.0f);
+
+    // Initialize centroids: Rank 0 picks K evenly spaced points
+    {
+        std::vector<float> seeds(K * dimensions);
+        if(rank == 0){
+            std::ifstream file("dataset.bin", std::ios::binary);
+            file.seekg(2 * sizeof(uint32_t));
+            int step = nPoints / K;
+            for(int c = 0; c < K; c++){
+                file.seekg(2 * sizeof(uint32_t) + (long)(c * step) * dimensions * sizeof(float));
+                file.read((char*)&seeds[c * dimensions], dimensions * sizeof(float));
+            }
+        }
+        MPI_Bcast(seeds.data(), K * dimensions, MPI_FLOAT, 0, MPI_COMM_WORLD);
+        globalCentroids = seeds;
+    }
 
     for(int iter = 0; iter < maxIter; iter++){
-        localN = localCount / dimensions;
-        localGroups.resize(localN);
 
-        // Compute local centroid (mean of all local points)
-        std::vector<float> centroid(dimensions, 0.0f);
-
-        if (localN > 0){
-            #pragma omp parallel
-            {
-                std::vector<float> local_sum(dimensions, 0.0f);
-                #pragma omp for schedule(static)
-                for (int i = 0; i < localN; i++){
-                    const float* row = &localPoints[i * dimensions];
-                    for (uint32_t d = 0; d < dimensions; d++){
-                        local_sum[d] += row[d];
-                    }
-                }
-                #pragma omp critical
-                {
-                    for (uint32_t d = 0; d < dimensions; d++){
-                        centroid[d] += local_sum[d];
-                    }
-                }
-            }
-
-            float inv = 1.0f / localN;
-            for(uint32_t d = 0; d < dimensions; d++){
-                centroid[d] *= inv;
-            }
-        }
-
-        // Share centroids across all processes
-        MPI_Allgather(centroid.data(), dimensions, MPI_FLOAT, 
-                      globalCentroids.data(), dimensions, MPI_FLOAT, MPI_COMM_WORLD);
-
-        if(rank == 0 && (iter == 0 || iter % 10 == 0)){
-            std::cout << "\nCentroids iter: " << iter << "\n";
-            for(int r = 0; r < size; r++){
-                std::cout << "Group " << r << ": [ ";
-                for(uint32_t d = 0; d < dimensions; d++){
-                    std::cout << globalCentroids[r*dimensions + d] << " ";
-                }
-                std::cout << "]\n";
-            }
-        }
-
-        // Assign each point to nearest centroid (parallel)
+        // Assign each local point to nearest centroid
         int localChanges = 0;
 
         #pragma omp parallel for schedule(static) reduction(+:localChanges)
@@ -145,26 +119,24 @@ int main(int argc, char** argv){
             int bestGroup = -1;
             const float* point = &localPoints[i * dimensions];
 
-            for(int c = 0; c < size; c++){
+            for(int c = 0; c < K; c++){
                 float dist = 0.0f;
                 const float* cent = &globalCentroids[c * dimensions];
-
                 for(uint32_t d = 0; d < dimensions; d++){
                     float diff = point[d] - cent[d];
                     dist += diff * diff;
                 }
-
                 if(dist < bestDist){
                     bestDist = dist;
                     bestGroup = c;
                 }
             }
 
+            if(localGroups[i] != bestGroup) localChanges++;
             localGroups[i] = bestGroup;
-            if(bestGroup != rank) localChanges++;
         }
 
-        // Check convergence
+        // Check convergence globally
         int globalChanges = 0;
         MPI_Allreduce(&localChanges, &globalChanges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
@@ -173,60 +145,67 @@ int main(int argc, char** argv){
             std::cout << "Change percentage: " << changeRatio * 100.0 << "%. iter: " << iter << std::endl;
         }
 
-        if (changeRatio < 0.05f) {
+        if (iter > 0 && changeRatio < 0.001f) {
             if (rank == 0){
                 std::cout << "Convergence reached at iteration " << iter
-                        << " with " << changeRatio * 100.0 
+                        << " with " << changeRatio * 100.0
                         << "% global changes.\n";
             }
             break;
         }
 
-        // --- Phase 4: Migrate points to their assigned process ---
-        std::vector<int> sendCounts(size, 0);
+        // Compute partial sums for each centroid locally
+        std::vector<double> localSums(K * dimensions, 0.0);
+        std::vector<int> localCounts(K, 0);
 
-        for(int i = 0; i < localN; i++){
-            sendCounts[localGroups[i]] += dimensions;
-        }
+        #pragma omp parallel
+        {
+            std::vector<double> tSums(K * dimensions, 0.0);
+            std::vector<int> tCounts(K, 0);
 
-        std::vector<int> sdispls(size);
-        sdispls[0] = 0;
-        for(int r = 1; r < size; r++){
-            sdispls[r] = sdispls[r-1] + sendCounts[r-1];
-        }
-
-        int totalSend = sdispls[size-1] + sendCounts[size-1];
-        std::vector<float> sendbuf(totalSend);
-        std::vector<int> pos(size, 0);
-        
-        for(int i = 0; i < localN; i++){
-            int dest = localGroups[i];
-            int off = sdispls[dest] + pos[dest];
-            const float* row = &localPoints[i * dimensions];
-
-            for(uint32_t d = 0; d < dimensions; d++){
-                sendbuf[off + d] = row[d];
+            #pragma omp for schedule(static)
+            for(int i = 0; i < localN; i++){
+                int g = localGroups[i];
+                tCounts[g]++;
+                const float* row = &localPoints[i * dimensions];
+                for(uint32_t d = 0; d < dimensions; d++)
+                    tSums[g * dimensions + d] += row[d];
             }
-            pos[dest] += dimensions;
+
+            #pragma omp critical
+            {
+                for(int c = 0; c < K; c++){
+                    localCounts[c] += tCounts[c];
+                    for(uint32_t d = 0; d < dimensions; d++)
+                        localSums[c * dimensions + d] += tSums[c * dimensions + d];
+                }
+            }
         }
 
-        // Exchange points between all processes
-        std::vector<int> recvcounts(size);
-        MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvcounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        // Reduce across all processes
+        std::vector<double> globalSums(K * dimensions);
+        std::vector<int> globalCounts(K);
+        MPI_Allreduce(localSums.data(), globalSums.data(), K * dimensions, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(localCounts.data(), globalCounts.data(), K, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
-        std::vector<int> rdispls(size);
-        rdispls[0] = 0;
-        for(int r = 1; r < size; r++){
-            rdispls[r] = rdispls[r-1] + recvcounts[r-1];
+        // Update centroids
+        for(int c = 0; c < K; c++){
+            if(globalCounts[c] > 0){
+                for(uint32_t d = 0; d < dimensions; d++)
+                    globalCentroids[c * dimensions + d] = (float)(globalSums[c * dimensions + d] / globalCounts[c]);
+            }
+            // If empty cluster, centroid stays unchanged
         }
 
-        int totalRecv = rdispls[size-1] + recvcounts[size-1];
-        localPoints.resize(totalRecv);
-
-        MPI_Alltoallv(sendbuf.data(), sendCounts.data(), sdispls.data(), MPI_FLOAT, 
-                      localPoints.data(), recvcounts.data(), rdispls.data(), MPI_FLOAT, MPI_COMM_WORLD);
-
-        localCount = totalRecv;
+        if(rank == 0 && (iter == 0 || iter % 10 == 0)){
+            std::cout << "\nCentroids iter: " << iter << "\n";
+            for(int c = 0; c < K; c++){
+                std::cout << "Group " << c << ": [ ";
+                for(uint32_t d = 0; d < dimensions; d++)
+                    std::cout << globalCentroids[c * dimensions + d] << " ";
+                std::cout << "]\n";
+            }
+        }
     }
 
     // --- Phase 5: Final statistics (only once, after convergence) ---
